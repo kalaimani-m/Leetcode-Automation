@@ -1,0 +1,49 @@
+name: Daily LeetCode Progress Report
+
+on:
+  schedule:
+    # 3:30 UTC = 9:00 AM IST, every day
+    - cron: "30 3 * * *"
+  workflow_dispatch:
+    inputs:
+      test_run:
+        description: "Run in test mode (writes TEST report, does not email)"
+        required: false
+        default: "false"
+
+permissions:
+  contents: write
+
+jobs:
+  run-report:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run daily report (scheduled / real)
+        if: ${{ github.event.inputs.test_run != 'true' }}
+        env:
+          SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+          SENDER_APP_PASSWORD: ${{ secrets.SENDER_APP_PASSWORD }}
+        run: python main.py
+
+      - name: Run test report (manual test mode)
+        if: ${{ github.event.inputs.test_run == 'true' }}
+        run: python main.py --test
+
+      - name: Commit generated report + history back to repo
+        run: |
+          git config user.name "leetcode-report-bot"
+          git config user.email "actions@github.com"
+          git add reports/ data/
+          git diff --staged --quiet || git commit -m "Daily report $(date -u +'%Y-%m-%d')"
+          git push
