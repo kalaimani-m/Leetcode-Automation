@@ -1,19 +1,19 @@
 """
-Daily LeetCode student progress report.
+Daily LeetCode student progress report -- multi-batch version.
 
 Usage:
-    python main.py            # normal daily run -> LeetCode_Daily_Report_YYYY-MM-DD.xlsx
-    python main.py --test     # test run -> LeetCode_Daily_Report_TEST.xlsx, no email sent
+    python main.py            # normal daily run -> one dated report per batch, one email with both attached
+    python main.py --test     # test run -> TEST reports per batch, no email sent
 
-Reads students/leetcode_Links.xlsx (the master list), queries each student's
-public LeetCode profile, writes the report, appends to data/history.csv,
-and (unless --test) emails the report.
+Add or remove batches by editing the BATCHES list below. Each batch's Excel
+file is read by COLUMN POSITION (S.No, Reg No, Name, LeetCode ID, Profile URL,
+in that order) rather than by header text, so it doesn't matter that
+different batches label their headers slightly differently
+(e.g. "S.No" vs "SL.NO", "link" vs "LEETCODE LINK").
 """
 
 import os
-import sys
 import csv
-import json
 import time
 import smtplib
 import argparse
@@ -28,41 +28,65 @@ from openpyxl.styles import Font, Alignment, PatternFill
 from leetcode_client import extract_username, fetch_profile, count_unique_solved_today
 
 IST = ZoneInfo("Asia/Kolkata")
-STUDENTS_FILE = os.path.join(os.path.dirname(__file__), "students", "leetcode_Links.xlsx")
-REPORTS_DIR = os.path.join(os.path.dirname(__file__), "reports")
-HISTORY_FILE = os.path.join(os.path.dirname(__file__), "data", "history.csv")
+BASE_DIR = os.path.dirname(__file__)
+REPORTS_DIR = os.path.join(BASE_DIR, "reports")
 DELAY_BETWEEN_STUDENTS = 2  # seconds -- be polite to LeetCode, avoid rate-limit bans
 
-RECEIVER_EMAIL = "kalaimani.cybersec@prathyusha.edu.in"
+RECEIVER_EMAIL = "kalaimani.cybersec@prathyusha.edu.in"  # change this if you want a different destination
+
+# ---- Batches -------------------------------------------------------------
+# label          : shown in the email body
+# students_file  : path to the master Excel file, relative to this script
+# report_name    : prefix used for the dated report filename
+# history_file   : append-only CSV this batch's daily numbers get logged to
+BATCHES = [
+    {
+        "label": "Batch 1 (Reg. No. 111424xxxxxx)",
+        "students_file": os.path.join(BASE_DIR, "students", "leetcode_Links.xlsx"),
+        "report_name": "LeetCode_Daily_Report",
+        "history_file": os.path.join(BASE_DIR, "data", "history.csv"),
+    },
+    {
+        "label": "2nd Year (Reg. No. 111425xxxxxx)",
+        "students_file": os.path.join(BASE_DIR, "students", "2nd_year_leetcode_links.xlsx"),
+        "report_name": "LeetCode_Daily_Report_2ndYear",
+        "history_file": os.path.join(BASE_DIR, "data", "history_2ndyear.csv"),
+    },
+]
 
 
 def load_students(path):
-    """Find the real header row (S.No / Reg.no / ...) and return a clean DataFrame."""
+    """
+    Find the header row (search first 6 rows for something that looks like
+    a serial-number column: 's.no', 'sl.no', 's no', etc.), then return the
+    data below it. Columns are used by POSITION elsewhere, not by name, so
+    it doesn't matter exactly what each batch calls its headers.
+    """
     raw = pd.read_excel(path, header=None)
     header_row_idx = None
-    for i in range(min(5, len(raw))):
+    for i in range(min(6, len(raw))):
         row_values = [str(v).strip().lower() for v in raw.iloc[i].tolist()]
-        if any("s.no" in v for v in row_values):
+        if any(("s.no" in v) or ("sl.no" in v) or ("s no" in v) for v in row_values):
             header_row_idx = i
             break
     if header_row_idx is None:
-        raise ValueError("Could not find the header row (looking for 'S.No') in the master Excel file.")
+        raise ValueError(f"Could not find the header row in {path} (looking for a 'S.No'-like column).")
 
     df = pd.read_excel(path, header=header_row_idx)
-    df.columns = [str(c).strip() for c in df.columns]
     df = df.dropna(subset=[df.columns[0]])  # drop fully blank trailing rows
-    return df
+    return df.reset_index(drop=True)
 
 
 def process_students(df, today_ist_date):
     results = []
     total = len(df)
 
-    for i, row in df.reset_index(drop=True).iterrows():
-        sno = row.get("S.No")
-        regno = row.get("Reg.no")
-        name = row.get("Name of the Student")
-        url = row.get("link")
+    for i, row in df.iterrows():
+        vals = row.tolist()
+        sno = vals[0] if len(vals) > 0 else None
+        regno = vals[1] if len(vals) > 1 else None
+        name = vals[2] if len(vals) > 2 else None
+        url = vals[4] if len(vals) > 4 else None
 
         username = extract_username(url) if isinstance(url, str) else None
 
@@ -128,8 +152,6 @@ def build_report(results, today_ist_date, out_path):
     for col, w in zip("ABCDEF", widths):
         ws.column_dimensions[col].width = w
 
-    # Second sheet: anything worth the user's attention -- doesn't touch the
-    # required 6-column layout above, it's supplementary.
     notes = [r for r in results if r["note"]]
     if notes:
         ws2 = wb.create_sheet("Notes")
@@ -144,10 +166,10 @@ def build_report(results, today_ist_date, out_path):
     wb.save(out_path)
 
 
-def append_history(results, today_ist_date):
-    os.makedirs(os.path.dirname(HISTORY_FILE), exist_ok=True)
-    file_exists = os.path.isfile(HISTORY_FILE)
-    with open(HISTORY_FILE, "a", newline="") as f:
+def append_history(results, today_ist_date, history_file):
+    os.makedirs(os.path.dirname(history_file), exist_ok=True)
+    file_exists = os.path.isfile(history_file)
+    with open(history_file, "a", newline="") as f:
         writer = csv.writer(f)
         if not file_exists:
             writer.writerow(["Date", "Reg.no", "Student Name", "Problems Solved Today", "Overall Solved"])
@@ -156,7 +178,19 @@ def append_history(results, today_ist_date):
             writer.writerow([date_str, r["regno"], r["name"], r["today"], r["overall"]])
 
 
-def send_email(report_path, today_ist_date):
+def summarize(results):
+    checked_ok = sum(1 for r in results if r["today"] != "N/A")
+    unavailable = sum(1 for r in results if r["today"] == "N/A")
+    solved_today = sum(1 for r in results if isinstance(r["today"], int) and r["today"] > 0)
+    total_today = sum(r["today"] for r in results if isinstance(r["today"], int))
+    return {
+        "total": len(results), "checked_ok": checked_ok, "unavailable": unavailable,
+        "solved_today": solved_today, "total_today": total_today,
+    }
+
+
+def send_email(attachments, today_ist_date, batch_summaries):
+    """attachments: list of (filepath, label). batch_summaries: list of (label, summary_dict)."""
     sender = os.environ.get("SENDER_EMAIL")
     app_password = os.environ.get("SENDER_APP_PASSWORD")
     if not sender or not app_password:
@@ -168,65 +202,78 @@ def send_email(report_path, today_ist_date):
     msg["Subject"] = f"Daily LeetCode Student Progress Report - {today_ist_date.strftime('%Y-%m-%d')}"
     msg["From"] = sender
     msg["To"] = RECEIVER_EMAIL
-    msg.set_content(
-        f"Dear Sir/Madam,\n\n"
-        f"Please find attached the Daily LeetCode Student Progress Report for {date_str}.\n\n"
-        f"The report contains the daily and overall LeetCode problem-solving progress of all students.\n\n"
-        f"Regards,\nKalaimani"
-    )
 
-    with open(report_path, "rb") as f:
-        msg.add_attachment(
-            f.read(),
-            maintype="application",
-            subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            filename=os.path.basename(report_path),
+    body_lines = [
+        "Dear Sir/Madam,",
+        "",
+        f"Please find attached the Daily LeetCode Student Progress Reports for {date_str}.",
+        "",
+    ]
+    for label, summ in batch_summaries:
+        body_lines.append(
+            f"{label}: {summ['total']} students | {summ['checked_ok']} checked | "
+            f"{summ['unavailable']} unavailable | {summ['solved_today']} solved \u22651 problem today | "
+            f"{summ['total_today']} total problems solved today"
         )
+    body_lines += ["", "Regards,", "Kalaimani"]
+    msg.set_content("\n".join(body_lines))
+
+    for filepath, _label in attachments:
+        with open(filepath, "rb") as f:
+            msg.add_attachment(
+                f.read(),
+                maintype="application",
+                subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                filename=os.path.basename(filepath),
+            )
 
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
         smtp.login(sender, app_password)
         smtp.send_message(msg)
-    print(f"Email sent to {RECEIVER_EMAIL}")
+    print(f"Email sent to {RECEIVER_EMAIL} with {len(attachments)} attachment(s)")
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--test", action="store_true", help="Test run: writes LeetCode_Daily_Report_TEST.xlsx, does not email")
+    parser.add_argument("--test", action="store_true", help="Test run: writes TEST reports, does not email")
     args = parser.parse_args()
 
     today_ist = datetime.now(IST).date()
     os.makedirs(REPORTS_DIR, exist_ok=True)
 
-    print(f"Loading student master file: {STUDENTS_FILE}")
-    df = load_students(STUDENTS_FILE)
-    print(f"Loaded {len(df)} students.")
+    attachments = []
+    batch_summaries = []
 
-    results = process_students(df, today_ist)
+    for batch in BATCHES:
+        print(f"\n=== {batch['label']} ===")
+        print(f"Loading: {batch['students_file']}")
+        df = load_students(batch["students_file"])
+        print(f"Loaded {len(df)} students.")
 
-    if args.test:
-        out_path = os.path.join(REPORTS_DIR, "LeetCode_Daily_Report_TEST.xlsx")
-    else:
-        out_path = os.path.join(REPORTS_DIR, f"LeetCode_Daily_Report_{today_ist.isoformat()}.xlsx")
+        results = process_students(df, today_ist)
 
-    build_report(results, today_ist, out_path)
-    print(f"Report written to {out_path}")
+        if args.test:
+            out_path = os.path.join(REPORTS_DIR, f"{batch['report_name']}_TEST.xlsx")
+        else:
+            out_path = os.path.join(REPORTS_DIR, f"{batch['report_name']}_{today_ist.isoformat()}.xlsx")
 
-    append_history(results, today_ist)
+        build_report(results, today_ist, out_path)
+        print(f"Report written to {out_path}")
 
-    checked_ok = sum(1 for r in results if r["today"] != "N/A")
-    unavailable = sum(1 for r in results if r["today"] == "N/A")
-    solved_today = sum(1 for r in results if isinstance(r["today"], int) and r["today"] > 0)
-    total_today = sum(r["today"] for r in results if isinstance(r["today"], int))
+        append_history(results, today_ist, batch["history_file"])
 
-    print("\n--- Summary ---")
-    print(f"Total students: {len(results)}")
-    print(f"Successfully checked: {checked_ok}")
-    print(f"Unavailable / errored: {unavailable}")
-    print(f"Students who solved >=1 problem today: {solved_today}")
-    print(f"Total unique problems solved today (all students): {total_today}")
+        summ = summarize(results)
+        batch_summaries.append((batch["label"], summ))
+        attachments.append((out_path, batch["label"]))
+
+        print(f"-- Summary: {summ}")
+
+    print("\n--- Overall ---")
+    for label, summ in batch_summaries:
+        print(f"{label}: {summ}")
 
     if not args.test:
-        send_email(out_path, today_ist)
+        send_email(attachments, today_ist, batch_summaries)
     else:
         print("\nTest run -- email NOT sent. Run without --test for the real daily run.")
 
