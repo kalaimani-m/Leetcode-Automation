@@ -43,13 +43,13 @@ BATCHES = [
     {
         "label": "Batch 1 (Reg. No. 111424xxxxxx)",
         "students_file": os.path.join(BASE_DIR, "students", "leetcode_Links.xlsx"),
-        "report_name": "LeetCode_Daily_Report",
+        "report_name": "Leetcode Daily Report 3 year",
         "history_file": os.path.join(BASE_DIR, "data", "history.csv"),
     },
     {
         "label": "2nd Year (Reg. No. 111425xxxxxx)",
         "students_file": os.path.join(BASE_DIR, "students", "2nd_year_leetcode_links.xlsx"),
-        "report_name": "LeetCode_Daily_Report_2ndYear",
+        "report_name": "LeetcodeDaily Report 2 year",
         "history_file": os.path.join(BASE_DIR, "data", "history_2ndyear.csv"),
     },
 ]
